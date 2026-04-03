@@ -1,15 +1,30 @@
 import os
-import re
-import unicodedata
-import time
-import requests
-import concurrent.futures
-import streamlit as st
-import pandas as pd
-from deep_translator import GoogleTranslator
-from textblob import TextBlob
+import nltk
 
-os.system("python -m textblob.download_corpora quiet 2>/dev/null")
+# Força o download do NLTK/TextBlob para uma pasta que o Streamlit consegue ler
+# Isso evita o erro de 'MissingCorpusError' no deploy
+try:
+    # Cria o diretório se não existir
+    nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+    if not os.path.exists(nltk_data_path):
+        os.makedirs(nltk_data_path)
+    
+    # Adiciona o caminho aos caminhos de busca do NLTK
+    nltk.data.path.append(nltk_data_path)
+    
+    # Baixa apenas o essencial (punkt para sentenças e brown para tags)
+    nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
+    nltk.download('brown', download_dir=nltk_data_path, quiet=True)
+    nltk.download('punkt_tab', download_dir=nltk_data_path, quiet=True)
+    nltk.download('averaged_perceptron_tagger_eng', download_dir=nltk_data_path, quiet=True)
+    
+except Exception as e:
+    print(f"Erro ao baixar corpora: {e}")
+
+# Agora sim os outros imports
+import streamlit as st
+from textblob import TextBlob
+# ... resto dos seus imports
 
 # ─────────────────────────────────────────────
 #  Página
