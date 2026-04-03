@@ -1,40 +1,45 @@
 import os
+import re
+import unicodedata
+import time
+import requests
+import concurrent.futures
 import nltk
+import pandas as pd
+from deep_translator import GoogleTranslator
 
-# Força o download do NLTK/TextBlob para uma pasta que o Streamlit consegue ler
-# Isso evita o erro de 'MissingCorpusError' no deploy
+# ── Configuração do NLTK/TextBlob para o Deploy ──
 try:
-    # Cria o diretório se não existir
+    # Cria o diretório local para evitar erro de permissão no Streamlit Cloud
     nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
     if not os.path.exists(nltk_data_path):
         os.makedirs(nltk_data_path)
     
-    # Adiciona o caminho aos caminhos de busca do NLTK
-    nltk.data.path.append(nltk_data_path)
+    # Avisa ao NLTK para procurar os dicionários nesta pasta
+    if nltk_data_path not in nltk.data.path:
+        nltk.data.path.append(nltk_data_path)
     
-    # Baixa apenas o essencial (punkt para sentenças e brown para tags)
+    # Downloads necessários para o processamento de linguagem natural (NLP)
     nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
     nltk.download('brown', download_dir=nltk_data_path, quiet=True)
     nltk.download('punkt_tab', download_dir=nltk_data_path, quiet=True)
     nltk.download('averaged_perceptron_tagger_eng', download_dir=nltk_data_path, quiet=True)
     
 except Exception as e:
-    print(f"Erro ao baixar corpora: {e}")
+    print(f"Erro no setup do NLTK: {e}")
 
-# Agora sim os outros imports
+# Agora importamos o Streamlit e o TextBlob
 import streamlit as st
 from textblob import TextBlob
-# ... resto dos seus imports
 
 # ─────────────────────────────────────────────
-#  Página
+#  Configuração da Página
 # ─────────────────────────────────────────────
 st.set_page_config(
     page_title="MedSearch Architect — Universidade de Vassouras",
     page_icon="assets/logo.png" if os.path.exists("assets/logo.png") else None,
     layout="wide",
 )
-
 # ─────────────────────────────────────────────
 #  CSS — estética "Digital Library"
 # ─────────────────────────────────────────────
