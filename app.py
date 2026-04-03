@@ -4,22 +4,73 @@ import unicodedata
 import time
 import requests
 import concurrent.futures
-import streamlit as st
+import nltk
 import pandas as pd
 from deep_translator import GoogleTranslator
+
+# ── 1. CONFIGURAÇÃO DE AMBIENTE (RESOLVE O MISSINGCORPUSERROR) ──
+try:
+    # Define um caminho na pasta 'home' do servidor (onde temos permissão)
+    home_dir = os.path.expanduser('~')
+    nltk_data_path = os.path.join(home_dir, 'nltk_data')
+    
+    if not os.path.exists(nltk_data_path):
+        os.makedirs(nltk_data_path)
+    
+    # Força o NLTK e o TextBlob a olharem primeiro nesta pasta
+    nltk.data.path.insert(0, nltk_data_path)
+    os.environ["NLTK_DATA"] = nltk_data_path
+    
+    # Downloads essenciais para o funcionamento do NLP
+    nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
+    nltk.download('brown', download_dir=nltk_data_path, quiet=True)
+    nltk.download('punkt_tab', download_dir=nltk_data_path, quiet=True)
+    nltk.download('averaged_perceptron_tagger_eng', download_dir=nltk_data_path, quiet=True)
+    
+except Exception as e:
+    # Falha silenciosa para não travar a interface se o download falhar
+    pass
+
+# Agora importamos os pacotes que dependem do NLTK acima
+import streamlit as st
 from textblob import TextBlob
 
-os.system("python -m textblob.download_corpora quiet 2>/dev/null")
-
-# ─────────────────────────────────────────────
-#  Página
-# ─────────────────────────────────────────────
+# ── 2. CONFIGURAÇÃO DA PÁGINA ──
 st.set_page_config(
     page_title="MedSearch Architect — Universidade de Vassouras",
     page_icon="assets/logo.png" if os.path.exists("assets/logo.png") else None,
     layout="wide",
 )
 
+# ── 3. CABEÇALHO MOBILE (APARECE APENAS NO CELULAR) ──
+# Este bloco garante que seu nome e o da Vassouras apareçam no topo no mobile
+st.markdown("""
+<style>
+.mobile-header {
+    display: none;
+    background: #0A1628;
+    color: white;
+    padding: 1.2rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+@media (max-width: 768px) {
+    .mobile-header { display: block; }
+}
+</style>
+
+<div class="mobile-header">
+    <div style="font-family: Georgia, serif; font-weight: 700; font-size: 1.1rem; letter-spacing: 0.5px;">
+        Universidade de Vassouras
+    </div>
+    <div style="font-size: 0.75rem; opacity: 0.8; margin-top: 5px; letter-spacing: 1px; text-transform: uppercase;">
+        Monitoria de IC | Matheus Degani
+    </div>
+</div>
+""", unsafe_allow_html=True)
 # ─────────────────────────────────────────────
 #  CSS — estética "Digital Library"
 # ─────────────────────────────────────────────
