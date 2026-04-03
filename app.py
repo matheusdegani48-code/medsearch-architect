@@ -4,73 +4,42 @@ import unicodedata
 import time
 import requests
 import concurrent.futures
-import nltk
+import streamlit as st
 import pandas as pd
 from deep_translator import GoogleTranslator
-
-# ── 1. CONFIGURAÇÃO DE AMBIENTE (RESOLVE O MISSINGCORPUSERROR) ──
-try:
-    # Define um caminho na pasta 'home' do servidor (onde temos permissão)
-    home_dir = os.path.expanduser('~')
-    nltk_data_path = os.path.join(home_dir, 'nltk_data')
-    
-    if not os.path.exists(nltk_data_path):
-        os.makedirs(nltk_data_path)
-    
-    # Força o NLTK e o TextBlob a olharem primeiro nesta pasta
-    nltk.data.path.insert(0, nltk_data_path)
-    os.environ["NLTK_DATA"] = nltk_data_path
-    
-    # Downloads essenciais para o funcionamento do NLP
-    nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
-    nltk.download('brown', download_dir=nltk_data_path, quiet=True)
-    nltk.download('punkt_tab', download_dir=nltk_data_path, quiet=True)
-    nltk.download('averaged_perceptron_tagger_eng', download_dir=nltk_data_path, quiet=True)
-    
-except Exception as e:
-    # Falha silenciosa para não travar a interface se o download falhar
-    pass
-
-# Agora importamos os pacotes que dependem do NLTK acima
-import streamlit as st
 from textblob import TextBlob
+import nltk
 
-# ── 2. CONFIGURAÇÃO DA PÁGINA ──
+# ── Download dos corpora NLTK ──────────────────────────────────────────────────
+# Força /tmp como diretório gravável (necessário no Streamlit Cloud).
+# Usamos apenas os corpora leves: punkt (tokenização) e
+# averaged_perceptron_tagger (POS tagging). conll2000/movie_reviews são
+# evitados — pesados e causam o MissingCorpusError no Cloud.
+_NLTK_DIR = "/tmp/nltk_data"
+os.makedirs(_NLTK_DIR, exist_ok=True)
+if _NLTK_DIR not in nltk.data.path:
+    nltk.data.path.insert(0, _NLTK_DIR)
+
+for _corpus in [
+    "punkt",
+    "punkt_tab",
+    "averaged_perceptron_tagger",
+    "averaged_perceptron_tagger_eng",
+]:
+    try:
+        nltk.download(_corpus, download_dir=_NLTK_DIR, quiet=True)
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────
+#  Página
+# ─────────────────────────────────────────────
 st.set_page_config(
     page_title="MedSearch Architect — Universidade de Vassouras",
     page_icon="assets/logo.png" if os.path.exists("assets/logo.png") else None,
     layout="wide",
 )
 
-# ── 3. CABEÇALHO MOBILE (APARECE APENAS NO CELULAR) ──
-# Este bloco garante que seu nome e o da Vassouras apareçam no topo no mobile
-st.markdown("""
-<style>
-.mobile-header {
-    display: none;
-    background: #0A1628;
-    color: white;
-    padding: 1.2rem;
-    border-radius: 8px;
-    margin-bottom: 1.5rem;
-    text-align: center;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-@media (max-width: 768px) {
-    .mobile-header { display: block; }
-}
-</style>
-
-<div class="mobile-header">
-    <div style="font-family: Georgia, serif; font-weight: 700; font-size: 1.1rem; letter-spacing: 0.5px;">
-        Universidade de Vassouras
-    </div>
-    <div style="font-size: 0.75rem; opacity: 0.8; margin-top: 5px; letter-spacing: 1px; text-transform: uppercase;">
-        Monitoria de IC | Matheus Degani
-    </div>
-</div>
-""", unsafe_allow_html=True)
 # ─────────────────────────────────────────────
 #  CSS — estética "Digital Library"
 # ─────────────────────────────────────────────
@@ -776,39 +745,88 @@ def remove_localities(text_en, localities):
         text_en = re.sub(re.escape(loc), " ", text_en, flags=re.IGNORECASE)
     return re.sub(r"\s{2,}", " ", text_en).strip()
 
-def extract_concepts_nlp(text_en):
-    blob = TextBlob(text_en)
-    protected = set()
-    concepts = []
-    for phrase in blob.noun_phrases:
-        phrase_clean = phrase.strip().lower()
-        if len(phrase_clean) < 3:
-            continue
-        words = phrase_clean.split()
-        if all(w in STOPWORDS_RESIDUAL for w in words):
-            continue
-        if words[0] in VERBS_TO_REMOVE:
-            continue
-        canonical = phrase.strip().title()
-        concepts.append(canonical)
-        for w in words:
-            protected.add(w)
-    for word, pos in blob.tags:
-        word_l = word.lower()
-        if word_l in protected or pos not in ALLOWED_POS:
-            continue
-        if word_l in STOPWORDS_RESIDUAL or word_l in VERBS_TO_REMOVE:
-            continue
-        if len(word_l) < 3:
-            continue
-        concepts.append(word.capitalize())
-    seen = set()
-    final = []
-    for c in concepts:
-        key = c.lower()
+def extract_concepts_nlp(text_en: str, mesh_terms_from_dict: list | None = None) -> list:
+    """
+    Extrai conceitos médicos do texto em inglês usando POS Tagging puro (NLTK).
+
+    Abandonamos blob.noun_phrases porque ele usa o ConllExtractor, que depende
+    do corpus conll2000 — pesado e instável no Streamlit Cloud — e causa
+    stemming agressivo ("Pressure" → "Pr") quando o corpus está ausente.
+
+    Estratégia:
+      1. Termos vindos do dicionário coloquial entram diretamente como conceitos
+         confirmados, sem passar pelo NLP (evita que "Hypertension" seja
+         retokenizado incorretamente).
+      2. O restante do texto passa por tokenização + POS tagging puro do NLTK.
+      3. Sequências contíguas de NN*/JJ/VBN são agrupadas em frases nominais
+         manualmente (chunking simples), preservando termos compostos como
+         "Heart Failure" ou "Blood Pressure".
+      4. Palavras isoladas de POS relevante (NN, NNS, NNP, NNPS) são aceitas
+         como fallback se não foram cobertas por nenhuma frase.
+    """
+    # ── Passo 1: injeta termos do dicionário diretamente ──────────────────────
+    final: list[str] = []
+    seen: set[str] = set()
+    protected_words: set[str] = set()
+
+    for term in (mesh_terms_from_dict or []):
+        key = term.lower()
         if key not in seen:
             seen.add(key)
-            final.append(c)
+            final.append(term)
+            for w in term.lower().split():
+                protected_words.add(w)
+
+    # ── Passo 2: tokenização + POS tagging via NLTK puro ──────────────────────
+    try:
+        tokens = nltk.word_tokenize(text_en)
+        tagged = nltk.pos_tag(tokens)
+    except Exception:
+        # Fallback mínimo: split simples sem POS
+        tokens = text_en.split()
+        tagged = [(t, "NN") for t in tokens]
+
+    # ── Passo 3: chunking manual de frases nominais ───────────────────────────
+    # Agrupa sequências contíguas de tokens com POS em ALLOWED_POS.
+    # Quebra em pontuação, verbos, preposições, etc.
+    CHUNK_POS = {"NN", "NNS", "NNP", "NNPS", "JJ", "VBN", "VBG"}
+    phrases: list[str] = []
+    current: list[str] = []
+
+    for word, pos in tagged:
+        if pos in CHUNK_POS and word.isalpha():
+            current.append(word)
+        else:
+            if current:
+                phrases.append(" ".join(current))
+                current = []
+    if current:
+        phrases.append(" ".join(current))
+
+    # ── Passo 4: filtragem e deduplicação ─────────────────────────────────────
+    for phrase in phrases:
+        phrase_l = phrase.lower()
+        words = phrase_l.split()
+
+        # Ignora frases muito curtas
+        if len(phrase_l) < 3:
+            continue
+        # Ignora se todos os tokens são stopwords
+        if all(w in STOPWORDS_RESIDUAL for w in words):
+            continue
+        # Ignora se começa com verbo de busca
+        if words[0] in VERBS_TO_REMOVE:
+            continue
+        # Ignora se todos os tokens já estão cobertos pelo dicionário
+        if all(w in protected_words for w in words):
+            continue
+
+        canonical = phrase.title()
+        key = canonical.lower()
+        if key not in seen:
+            seen.add(key)
+            final.append(canonical)
+
     return final
 
 def validar_mesh(termo):
@@ -997,7 +1015,9 @@ with tab_builder:
 
             with st.status("Analisando sintaxe médica...", expanded=True) as status:
                 time.sleep(0.2)
-                concepts_raw = extract_concepts_nlp(translated_clean)
+                # Termos vindos do dicionário coloquial entram direto, sem NLP
+                mesh_terms_diretos = [mesh for _, mesh in substituicoes_dict]
+                concepts_raw = extract_concepts_nlp(translated_clean, mesh_terms_diretos)
                 if not concepts_raw:
                     status.update(label="Nenhum conceito identificado.", state="error")
                     st.error("Não foi possível extrair conceitos. Tente uma descrição mais específica.")
